@@ -8,7 +8,7 @@ export async function POST(
 ) {
   const { id } = await params;
   const supabase = await createClient();
-  const serviceClient = await createServiceClient();
+  const serviceClient = createServiceClient();
 
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Yetkisiz" }, { status: 401 });
@@ -29,13 +29,25 @@ export async function POST(
     return NextResponse.json({ error: "Bu ödev zaten analiz edildi." }, { status: 409 });
   }
 
-  // Generate fresh signed URL (60s) for Claude
-  const { data: signedUrlData, error: signedError } = await serviceClient.storage
-    .from("homework-images")
-    .createSignedUrl(submission.image_path, 60);
+  // Support both single path (string) and multi-page (JSON array)
+  let imagePaths: string[];
+  try {
+    const parsed = JSON.parse(submission.image_path);
+    imagePaths = Array.isArray(parsed) ? parsed : [submission.image_path];
+  } catch {
+    imagePaths = [submission.image_path];
+  }
 
-  if (signedError || !signedUrlData) {
-    return NextResponse.json({ error: "Görsel URL alınamadı." }, { status: 500 });
+  // Generate fresh signed URLs (60s) for Claude
+  const signedUrls: string[] = [];
+  for (const path of imagePaths) {
+    const { data, error } = await serviceClient.storage
+      .from("homework-images")
+      .createSignedUrl(path, 60);
+    if (error || !data) {
+      return NextResponse.json({ error: "Görsel URL alınamadı." }, { status: 500 });
+    }
+    signedUrls.push(data.signedUrl);
   }
 
   // Mark as processing
@@ -48,7 +60,7 @@ export async function POST(
     const childName = (submission.children as { name: string } | null)?.name ?? "Öğrenci";
 
     const { result, rawResponse } = await analyzeHomework({
-      imageUrl: signedUrlData.signedUrl,
+      imageUrls: signedUrls,
       grade: submission.grade_at_time,
       subject: submission.subject,
       childName,

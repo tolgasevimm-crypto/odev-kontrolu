@@ -56,25 +56,26 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   const supabase = await createClient();
-  const serviceClient = await createServiceClient();
+  const serviceClient = createServiceClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Yetkisiz" }, { status: 401 });
 
   const formData = await request.formData();
-  const file = formData.get("image") as File | null;
+  const rawImages = formData.getAll("images") as File[];
   const childId = formData.get("childId") as string | null;
   const subject = formData.get("subject") as SubjectType | null;
 
-  if (!file || !childId || !subject) {
-    return NextResponse.json({ error: "Eksik alanlar: image, childId, subject" }, { status: 400 });
+  if (!rawImages.length || !childId || !subject) {
+    return NextResponse.json({ error: "Eksik alanlar: images, childId, subject" }, { status: 400 });
   }
 
-  if (!ALLOWED_TYPES.includes(file.type)) {
-    return NextResponse.json({ error: "Desteklenmeyen dosya türü. JPEG, PNG veya HEIC yükleyin." }, { status: 400 });
-  }
-
-  if (file.size > MAX_SIZE) {
-    return NextResponse.json({ error: "Dosya 10MB'dan büyük olamaz." }, { status: 400 });
+  for (const file of rawImages) {
+    if (!ALLOWED_TYPES.includes(file.type)) {
+      return NextResponse.json({ error: "Desteklenmeyen dosya türü. JPEG, PNG veya HEIC yükleyin." }, { status: 400 });
+    }
+    if (file.size > MAX_SIZE) {
+      return NextResponse.json({ error: "Her dosya 10MB'dan küçük olmalıdır." }, { status: 400 });
+    }
   }
 
   if (!SUBJECTS.includes(subject)) {
@@ -92,25 +93,36 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Çocuk bulunamadı." }, { status: 404 });
   }
 
-  const ext = file.type === "image/heic" || file.type === "image/heif"
-    ? "heic"
-    : (file.name.split(".").pop() ?? "jpg");
-  const imagePath = `${user.id}/${childId}/${crypto.randomUUID()}.${ext}`;
+  // Upload all images and collect paths
+  const submissionUuid = crypto.randomUUID();
+  const imagePaths: string[] = [];
 
-  const buffer = await file.arrayBuffer();
-  const { error: uploadError } = await serviceClient.storage
-    .from("homework-images")
-    .upload(imagePath, buffer, { contentType: file.type });
+  for (const file of rawImages) {
+    const ext = file.type === "image/heic" || file.type === "image/heif"
+      ? "heic"
+      : (file.name.split(".").pop() ?? "jpg");
+    const imagePath = `${user.id}/${childId}/${submissionUuid}/${imagePaths.length}.${ext}`;
 
-  if (uploadError) {
-    return NextResponse.json({ error: "Görsel yüklenemedi: " + uploadError.message }, { status: 500 });
+    const buffer = await file.arrayBuffer();
+    const { error: uploadError } = await serviceClient.storage
+      .from("homework-images")
+      .upload(imagePath, buffer, { contentType: file.type });
+
+    if (uploadError) {
+      return NextResponse.json({ error: "Görsel yüklenemedi: " + uploadError.message }, { status: 500 });
+    }
+
+    imagePaths.push(imagePath);
   }
 
+  // Create signed URL for first image (used as thumbnail)
   const { data: signedUrlData } = await serviceClient.storage
     .from("homework-images")
-    .createSignedUrl(imagePath, 3600);
+    .createSignedUrl(imagePaths[0], 3600);
 
   const imageUrl = signedUrlData?.signedUrl ?? "";
+  // Store all paths as JSON string in image_path, first path for thumbnail
+  const imagePathStored = imagePaths.length === 1 ? imagePaths[0] : JSON.stringify(imagePaths);
 
   const { data: submission, error: dbError } = await serviceClient
     .from("homework_submissions")
@@ -119,7 +131,7 @@ export async function POST(request: Request) {
       parent_id: user.id,
       subject,
       grade_at_time: child.grade,
-      image_path: imagePath,
+      image_path: imagePathStored,
       image_url: imageUrl,
       status: "pending",
     })

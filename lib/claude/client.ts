@@ -66,17 +66,22 @@ function toAnalysisResult(response: ClaudeAnalysisResponse): AnalysisResult {
 }
 
 export async function analyzeHomework(params: {
-  imageUrl: string;
+  imageUrls: string[];
   grade: number;
   subject: SubjectType;
   childName: string;
 }): Promise<{ result: AnalysisResult; rawResponse: string }> {
-  const { imageUrl, grade, subject, childName } = params;
+  const { imageUrls, grade, subject, childName } = params;
 
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
+      const imageBlocks = imageUrls.map((url) => ({
+        type: "image" as const,
+        source: { type: "url" as const, url },
+      }));
+
       const response = await anthropic.messages.create({
         model: "claude-sonnet-4-6",
         max_tokens: 4096,
@@ -91,16 +96,10 @@ export async function analyzeHomework(params: {
           {
             role: "user",
             content: [
-              {
-                type: "image",
-                source: {
-                  type: "url",
-                  url: imageUrl,
-                },
-              },
+              ...imageBlocks,
               {
                 type: "text",
-                text: buildUserMessage(imageUrl),
+                text: buildUserMessage(imageUrls[0]),
               },
             ],
           },
